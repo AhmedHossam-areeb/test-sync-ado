@@ -82,21 +82,31 @@ jobs:
           curl -fsSL --max-time 10 -o /dev/null -w "HTTP status: %{http_code}\n" "${CLEAN_URL}" \
             || echo "[INFO] HTTPS probe returned non-200 (auth required is expected, verify no connection error above)"
 
+          echo "=== Git connectivity via PAT (Authorization header) ==="
+          # Base64-encode :PAT (empty user, PAT as password - Azure DevOps recommended)
+          BASE64_PAT="$(printf ':%s' "${ADO_PAT}" | base64 -w 0)"
+          git -c http.extraheader="Authorization: Basic ${BASE64_PAT}" ls-remote "${CLEAN_URL}" HEAD \
+            && echo "[OK] git ls-remote succeeded" \
+            || { echo "[ERROR] git ls-remote failed - check PAT permissions (Code Read+Write required)"; exit 1; }
+
       - name: Push all branches and tags to Azure DevOps
         env:
           ADO_REMOTE_URL: ${{ secrets.ADO_REMOTE_URL }}
           ADO_PAT: ${{ secrets.ADO_PAT }}
         run: |
           set -euo pipefail
-          # Strip all whitespace from URL to avoid bad-hostname errors
           CLEAN_URL="$(printf '%s' "${ADO_REMOTE_URL}" | tr -d '[:space:]')"
+          # Base64-encode :PAT and pass via Authorization header.
+          # This avoids URL-parsing failures when the PAT contains special characters
+          # such as +, /, = which are common in Azure DevOps PATs.
+          BASE64_PAT="$(printf ':%s' "${ADO_PAT}" | base64 -w 0)"
 
           git remote remove ado 2>/dev/null || true
-          git remote add ado "https://sync-user:${ADO_PAT}@${CLEAN_URL#https://}"
+          git remote add ado "${CLEAN_URL}"
 
           git fetch origin --prune --tags
-          git push ado +refs/remotes/origin/*:refs/heads/* --prune
-          git push ado +refs/tags/*:refs/tags/* --force
+          git -c http.extraheader="Authorization: Basic ${BASE64_PAT}" push ado +refs/remotes/origin/*:refs/heads/* --prune
+          git -c http.extraheader="Authorization: Basic ${BASE64_PAT}" push ado +refs/tags/*:refs/tags/* --force
 
   ado_to_github:
     name: Sync Azure DevOps to GitHub
@@ -148,6 +158,12 @@ jobs:
           curl -fsSL --max-time 10 -o /dev/null -w "HTTP status: %{http_code}\n" "${CLEAN_URL}" \
             || echo "[INFO] HTTPS probe returned non-200 (auth required is expected, verify no connection error above)"
 
+          echo "=== Git connectivity via PAT (Authorization header) ==="
+          BASE64_PAT="$(printf ':%s' "${ADO_PAT}" | base64 -w 0)"
+          git -c http.extraheader="Authorization: Basic ${BASE64_PAT}" ls-remote "${CLEAN_URL}" HEAD \
+            && echo "[OK] git ls-remote succeeded" \
+            || { echo "[ERROR] git ls-remote failed - check PAT permissions (Code Read+Write required)"; exit 1; }
+
       - name: Pull from Azure DevOps and push to GitHub
         env:
           ADO_REMOTE_URL: ${{ secrets.ADO_REMOTE_URL }}
@@ -157,13 +173,14 @@ jobs:
         run: |
           set -euo pipefail
           CLEAN_URL="$(printf '%s' "${ADO_REMOTE_URL}" | tr -d '[:space:]')"
+          BASE64_PAT="$(printf ':%s' "${ADO_PAT}" | base64 -w 0)"
 
           git remote remove ado 2>/dev/null || true
-          git remote add ado "https://sync-user:${ADO_PAT}@${CLEAN_URL#https://}"
+          git remote add ado "${CLEAN_URL}"
 
           git remote remove github-auth 2>/dev/null || true
           git remote add github-auth "https://x-access-token:${GH_PUSH_TOKEN}@github.com/${GH_REPO}.git"
 
-          git fetch ado +refs/heads/*:refs/remotes/ado/* --prune --tags
+          git -c http.extraheader="Authorization: Basic ${BASE64_PAT}" fetch ado +refs/heads/*:refs/remotes/ado/* --prune --tags
           git push github-auth +refs/remotes/ado/*:refs/heads/* --prune
           git push github-auth +refs/tags/*:refs/tags/* --force
