@@ -14,7 +14,7 @@ pool:
   vmImage: ubuntu-latest
 
 variables:
-  GIT_SYNC_CONCURRENCY_GROUP: ado-to-github-sync
+  - group: sync
 
 jobs:
   - job: sync_ado_to_github
