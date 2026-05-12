@@ -1,0 +1,85 @@
+name: Sync Azure DevOps to GitHub
+
+trigger:
+  branches:
+    include:
+      - "*"
+  tags:
+    include:
+      - "*"
+
+pr: none
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  GIT_SYNC_CONCURRENCY_GROUP: ado-to-github-sync
+
+jobs:
+  - job: sync_ado_to_github
+    displayName: Sync Azure DevOps to GitHub
+    steps:
+      - checkout: self
+        fetchDepth: "0"
+        persistCredentials: "false"
+        displayName: Checkout all refs
+
+      - bash: |
+          set -euo pipefail
+
+          echo "=== Secret presence ==="
+          if [ -z "${GH_REMOTE_URL}" ];  then echo "[ERROR] GH_REMOTE_URL is empty";  exit 1; fi
+          if [ -z "${GH_PUSH_TOKEN}" ];  then echo "[ERROR] GH_PUSH_TOKEN is empty";  exit 1; fi
+          echo "GH_REMOTE_URL set: yes"
+          echo "GH_PUSH_TOKEN set: yes"
+
+          echo "=== GH_REMOTE_URL diagnostics ==="
+          echo "Raw byte length : $(printf '%s' "${GH_REMOTE_URL}" | wc -c)"
+          CLEAN_URL="$(printf '%s' "${GH_REMOTE_URL}" | tr -d '[:space:]')"
+          echo "Trimmed value   : ${CLEAN_URL}"
+
+          if [[ "${CLEAN_URL}" != https://* ]]; then
+            echo "[ERROR] GH_REMOTE_URL must start with https://"
+            exit 1
+          fi
+
+          HOSTNAME="$(echo "${CLEAN_URL}" | awk -F/ '{print $3}')"
+          echo "Parsed hostname : ${HOSTNAME}"
+
+          echo "=== Git version ==="
+          git --version
+
+          echo "=== DNS resolution ==="
+          nslookup "${HOSTNAME}" || echo "[WARN] nslookup failed for ${HOSTNAME}"
+
+          echo "=== HTTPS connectivity ==="
+          curl -fsSL --max-time 10 -o /dev/null -w "HTTP status: %{http_code}\n" "${CLEAN_URL}" \
+            || echo "[INFO] Non-200 response (auth required is expected)"
+
+          echo "=== Git connectivity ==="
+          git -c http.extraheader="Authorization: token ${GH_PUSH_TOKEN}" ls-remote "${CLEAN_URL}" HEAD \
+            && echo "[OK] git ls-remote to GitHub succeeded" \
+            || { echo "[ERROR] git ls-remote failed - check GH_PUSH_TOKEN has contents:write scope"; exit 1; }
+        displayName: Validate and debug secrets
+        env:
+          GH_REMOTE_URL: $(GH_REMOTE_URL)
+          GH_PUSH_TOKEN: $(GH_PUSH_TOKEN)
+
+      - bash: |
+          set -euo pipefail
+          CLEAN_URL="$(printf '%s' "${GH_REMOTE_URL}" | tr -d '[:space:]')"
+
+          git remote remove github-auth 2>/dev/null || true
+          git remote add github-auth "https://x-access-token:${GH_PUSH_TOKEN}@${CLEAN_URL#https://}"
+
+          # Fetch all remote-tracking refs from origin (ADO) into local branch refs.
+          # We use remote-tracking refs to avoid the checked-out-branch protection.
+          git fetch origin +refs/heads/*:refs/remotes/origin/* --prune --tags
+
+          git push github-auth +refs/remotes/origin/*:refs/heads/* --prune
+          git push github-auth +refs/tags/*:refs/tags/* --force
+        displayName: Push all branches and tags to GitHub
+        env:
+          GH_REMOTE_URL: $(GH_REMOTE_URL)
+          GH_PUSH_TOKEN: $(GH_PUSH_TOKEN)
