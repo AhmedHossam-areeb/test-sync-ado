@@ -1,28 +1,20 @@
-name: Sync GitHub and Azure DevOps
+name: Sync GitHub to Azure DevOps
 
 on:
   push:
     branches:
       - "**"
+      - "!develop"
+      - "!test"
+      - "!uat"
+      - "!master"
     tags:
       - "*"
   delete:
   workflow_dispatch:
-    inputs:
-      direction:
-        description: Sync direction to run.
-        required: true
-        default: github-to-ado
-        type: choice
-        options:
-          - github-to-ado
-          - ado-to-github
-          - both
-  schedule:
-    - cron: "*/30 * * * *"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: git-sync
@@ -31,7 +23,6 @@ concurrency:
 jobs:
   github_to_ado:
     name: Sync GitHub to Azure DevOps
-    if: github.event_name == 'push' || github.event_name == 'delete' || (github.event_name == 'workflow_dispatch' && (inputs.direction == 'github-to-ado' || inputs.direction == 'both'))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout all refs
@@ -107,80 +98,3 @@ jobs:
           git fetch origin --prune --tags
           git -c http.extraheader="Authorization: Basic ${BASE64_PAT}" push ado +refs/remotes/origin/*:refs/heads/* --prune
           git -c http.extraheader="Authorization: Basic ${BASE64_PAT}" push ado +refs/tags/*:refs/tags/* --force
-
-  ado_to_github:
-    name: Sync Azure DevOps to GitHub
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.direction == 'ado-to-github' || inputs.direction == 'both'))
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout all refs
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Validate and debug secrets
-        env:
-          ADO_REMOTE_URL: ${{ secrets.ADO_REMOTE_URL }}
-          ADO_PAT: ${{ secrets.ADO_PAT }}
-          GH_PUSH_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          echo "=== Secret presence ==="
-          if [ -z "${ADO_REMOTE_URL}" ];  then echo "[ERROR] ADO_REMOTE_URL is empty";  exit 1; fi
-          if [ -z "${ADO_PAT}" ];         then echo "[ERROR] ADO_PAT is empty";         exit 1; fi
-          if [ -z "${GH_PUSH_TOKEN}" ];   then echo "[ERROR] GH_PUSH_TOKEN is empty";   exit 1; fi
-          echo "ADO_REMOTE_URL set: yes"
-          echo "ADO_PAT set:        yes"
-          echo "GH_PUSH_TOKEN set:  yes"
-
-          echo "=== ADO_REMOTE_URL diagnostics ==="
-          echo "Raw byte length : $(printf '%s' "${ADO_REMOTE_URL}" | wc -c)"
-          echo "Trimmed value   : $(printf '%s' "${ADO_REMOTE_URL}" | tr -d '[:space:]')"
-
-          CLEAN_URL="$(printf '%s' "${ADO_REMOTE_URL}" | tr -d '[:space:]')"
-          if [[ "${CLEAN_URL}" != https://* ]]; then
-            echo "[ERROR] ADO_REMOTE_URL must start with https://"
-            exit 1
-          fi
-
-          HOSTNAME="$(echo "${CLEAN_URL}" | awk -F/ '{print $3}')"
-          echo "Parsed hostname : ${HOSTNAME}"
-
-          echo "=== Git version ==="
-          git --version
-
-          echo "=== DNS resolution ==="
-          nslookup "${HOSTNAME}" || echo "[WARN] nslookup failed for ${HOSTNAME}"
-
-          echo "=== HTTPS connectivity ==="
-          curl -fsSL --max-time 10 -o /dev/null -w "HTTP status: %{http_code}\n" "${CLEAN_URL}" \
-            || echo "[INFO] HTTPS probe returned non-200 (auth required is expected, verify no connection error above)"
-
-          echo "=== Git connectivity via PAT (Authorization header) ==="
-          BASE64_PAT="$(printf ':%s' "${ADO_PAT}" | base64 -w 0)"
-          git -c http.extraheader="Authorization: Basic ${BASE64_PAT}" ls-remote "${CLEAN_URL}" HEAD \
-            && echo "[OK] git ls-remote succeeded" \
-            || { echo "[ERROR] git ls-remote failed - check PAT permissions (Code Read+Write required)"; exit 1; }
-
-      - name: Pull from Azure DevOps and push to GitHub
-        env:
-          ADO_REMOTE_URL: ${{ secrets.ADO_REMOTE_URL }}
-          ADO_PAT: ${{ secrets.ADO_PAT }}
-          GH_PUSH_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          CLEAN_URL="$(printf '%s' "${ADO_REMOTE_URL}" | tr -d '[:space:]')"
-          BASE64_PAT="$(printf ':%s' "${ADO_PAT}" | base64 -w 0)"
-
-          git remote remove ado 2>/dev/null || true
-          git remote add ado "${CLEAN_URL}"
-
-          git remote remove github-auth 2>/dev/null || true
-          git remote add github-auth "https://x-access-token:${GH_PUSH_TOKEN}@github.com/${GH_REPO}.git"
-
-          git -c http.extraheader="Authorization: Basic ${BASE64_PAT}" fetch ado +refs/heads/*:refs/remotes/ado/* --prune --tags
-          git push github-auth +refs/remotes/ado/*:refs/heads/* --prune
-          git push github-auth +refs/tags/*:refs/tags/* --force
