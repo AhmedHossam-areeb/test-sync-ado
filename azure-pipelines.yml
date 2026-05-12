@@ -58,7 +58,7 @@ jobs:
             || echo "[INFO] Non-200 response (auth required is expected)"
 
           echo "=== Git connectivity ==="
-          git -c http.extraheader="Authorization: token ${GH_PUSH_TOKEN}" ls-remote "${CLEAN_URL}" HEAD \
+          git ls-remote "https://x-access-token:${GH_PUSH_TOKEN}@${CLEAN_URL#https://}" HEAD \
             && echo "[OK] git ls-remote to GitHub succeeded" \
             || { echo "[ERROR] git ls-remote failed - check GH_PUSH_TOKEN has contents:write scope"; exit 1; }
         displayName: Validate and debug secrets
