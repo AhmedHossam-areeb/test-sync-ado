@@ -1,0 +1,110 @@
+name: Sync GitHub and Azure DevOps
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "*"
+  delete:
+  workflow_dispatch:
+    inputs:
+      direction:
+        description: Sync direction to run.
+        required: true
+        default: github-to-ado
+        type: choice
+        options:
+          - github-to-ado
+          - ado-to-github
+          - both
+  schedule:
+    - cron: "*/30 * * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: git-sync
+  cancel-in-progress: false
+
+jobs:
+  github_to_ado:
+    name: Sync GitHub to Azure DevOps
+    if: github.event_name == 'push' || github.event_name == 'delete' || (github.event_name == 'workflow_dispatch' && (inputs.direction == 'github-to-ado' || inputs.direction == 'both'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout all refs
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate required Azure DevOps secrets
+        env:
+          ADO_REMOTE_URL: ${{ secrets.ADO_REMOTE_URL }}
+          ADO_PAT: ${{ secrets.ADO_PAT }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADO_REMOTE_URL}" ] || [ -z "${ADO_PAT}" ]; then
+            echo "Missing required secrets: ADO_REMOTE_URL and/or ADO_PAT"
+            exit 1
+          fi
+
+      - name: Push all branches and tags to Azure DevOps
+        env:
+          ADO_REMOTE_URL: ${{ secrets.ADO_REMOTE_URL }}
+          ADO_PAT: ${{ secrets.ADO_PAT }}
+        run: |
+          set -euo pipefail
+          git remote remove ado 2>/dev/null || true
+          git remote add ado "https://sync-user:${ADO_PAT}@${ADO_REMOTE_URL#https://}"
+
+          git fetch origin +refs/heads/*:refs/heads/* --prune --tags
+          git push ado +refs/heads/*:refs/heads/* --prune
+          git push ado +refs/tags/*:refs/tags/* --force
+
+  ado_to_github:
+    name: Sync Azure DevOps to GitHub
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.direction == 'ado-to-github' || inputs.direction == 'both'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout all refs
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate required sync secrets
+        env:
+          ADO_REMOTE_URL: ${{ secrets.ADO_REMOTE_URL }}
+          ADO_PAT: ${{ secrets.ADO_PAT }}
+          GH_PUSH_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADO_REMOTE_URL}" ] || [ -z "${ADO_PAT}" ]; then
+            echo "Missing required secrets: ADO_REMOTE_URL and/or ADO_PAT"
+            exit 1
+          fi
+          if [ -z "${GH_PUSH_TOKEN}" ]; then
+            echo "Missing required secret: GH_PUSH_TOKEN"
+            exit 1
+          fi
+
+      - name: Pull from Azure DevOps and push to GitHub
+        env:
+          ADO_REMOTE_URL: ${{ secrets.ADO_REMOTE_URL }}
+          ADO_PAT: ${{ secrets.ADO_PAT }}
+          GH_PUSH_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          git remote remove ado 2>/dev/null || true
+          git remote add ado "https://sync-user:${ADO_PAT}@${ADO_REMOTE_URL#https://}"
+
+          git remote remove github-auth 2>/dev/null || true
+          git remote add github-auth "https://x-access-token:${GH_PUSH_TOKEN}@github.com/${GH_REPO}.git"
+
+          git fetch ado +refs/heads/*:refs/heads/* --prune --tags
+          git push github-auth +refs/heads/*:refs/heads/* --prune
+          git push github-auth +refs/tags/*:refs/tags/* --force
