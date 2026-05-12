@@ -22,7 +22,7 @@ jobs:
     steps:
       - checkout: self
         fetchDepth: "0"
-        persistCredentials: "false"
+        persistCredentials: "true"
         displayName: Checkout all refs
 
       - bash: |
@@ -73,9 +73,16 @@ jobs:
           git remote remove github-auth 2>/dev/null || true
           git remote add github-auth "https://x-access-token:${GH_PUSH_TOKEN}@${CLEAN_URL#https://}"
 
+          # Authenticate fetch from Azure DevOps origin using pipeline OAuth token.
+          if [ -z "${SYSTEM_ACCESSTOKEN}" ]; then
+            echo "[ERROR] SYSTEM_ACCESSTOKEN is empty. Enable 'Allow scripts to access OAuth token' in the pipeline settings."
+            exit 1
+          fi
+          BASE64_OAUTH="$(printf ':%s' "${SYSTEM_ACCESSTOKEN}" | base64 -w 0)"
+
           # Fetch all remote-tracking refs from origin (ADO) into local branch refs.
           # We use remote-tracking refs to avoid the checked-out-branch protection.
-          git fetch origin +refs/heads/*:refs/remotes/origin/* --prune --tags
+          git -c http.extraheader="Authorization: Basic ${BASE64_OAUTH}" fetch origin +refs/heads/*:refs/remotes/origin/* --prune --tags
 
           git push github-auth +refs/remotes/origin/*:refs/heads/* --prune
           git push github-auth +refs/tags/*:refs/tags/* --force
@@ -83,3 +90,4 @@ jobs:
         env:
           GH_REMOTE_URL: $(GH_REMOTE_URL)
           GH_PUSH_TOKEN: $(GH_PUSH_TOKEN)
+          SYSTEM_ACCESSTOKEN: $(System.AccessToken)
